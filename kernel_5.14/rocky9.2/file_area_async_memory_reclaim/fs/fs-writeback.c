@@ -381,7 +381,6 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 
 	struct file_area *p_file_area;
 	struct file_stat_base *p_file_stat_base;
-	//unsigned int page_offset_in_file_area = 0;
 	int i;
 	int mark_page_count = 0;
 
@@ -389,18 +388,8 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 	/*该函数没有rcu_read_lock，但是有xa_lock_irq，也能防止并发delete file_stat和file_area*/
 	xa_lock_irq(&mapping->i_pages);
 
-	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
 	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
-	/* 必须要在rcu_read_lock()后，再执行smp_rmb()，再判断mapping->rh_reserved1指向的file_stat是否有效。
-	 * 因为这个文件file_stat可能长时间没访问，此时cold_file_stat_delete()正并发释放mapping->rh_reserved1
-	 * 指向的这个file_stat结构，并且赋值mapping->rh_reserved1=1。rcu_read_lock()保证file_stat不会立即被释放。 
-	 * smp_rmb()是要立即感知到mapping->rh_reserved1的最新值——即1。还有，p_file_stat = (struct file_stat *)mapping->rh_reserved1
-	 * 赋值必须放到smp_rmb()内存屏障前边，因为可能这里赋值时mapping->rh_reserved1还是正常，smp_rmb()执行后，
-	 * IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)执行时mapping->rh_reserved1已经被cold_file_stat_delete()赋值1了。
-	 * 如果不用smp_rmb()内存屏障隔开，可能会出现if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))先执行，此时
-	 * mapping->rh_reserved1还是正常的，但是再等执行p_file_stat = (struct file_stat *)mapping->rh_reserved1就是1了，
-	 * 此时就错过判断mapping->rh_reserved1非法了，然后执行mapping->rh_reserved1这个file_stat而crash!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-	 * */
+	
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
         printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
@@ -420,7 +409,6 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 	 * to possibly dirty folios while PAGECACHE_TAG_WRITEBACK points to
 	 * folios actually under writeback.
 	 */
-	//xas_for_each_marked(&xas, folio, ULONG_MAX, PAGECACHE_TAG_DIRTY) {
 	xas_for_each_marked(&xas, p_file_area, ULONG_MAX, PAGECACHE_TAG_DIRTY) {
 		long nr;
 		if(!is_file_area_entry(p_file_area))
@@ -431,7 +419,6 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 		 *dirty mark的file_area，再统计file_area有多少个有dirty mark的page，效果一样。mark_page_count是有dirty mark的page有效性判断*/
 		mark_page_count = 0;
 		for(i = 0;i < PAGE_COUNT_IN_AREA;i ++){
-			//folio = p_file_area->pages[i];
 			folio = rcu_dereference(p_file_area->pages[i]);
 			/*如果folio是file_area的索引，则对folio清NULL，避免folio干扰后续判断*/
 			folio_is_file_area_index_or_shadow_and_clear_NULL(folio);
@@ -451,7 +438,6 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 	}
 
 	xas_set(&xas, 0);
-	//xas_for_each_marked(&xas, folio, ULONG_MAX, PAGECACHE_TAG_WRITEBACK) {
 	xas_for_each_marked(&xas, p_file_area, ULONG_MAX, PAGECACHE_TAG_WRITEBACK) {
 		long nr;
 		if(!is_file_area_entry(p_file_area))
@@ -464,7 +450,6 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 		}
 		mark_page_count = 0;
 		for(i = 0;i < PAGE_COUNT_IN_AREA;i ++){
-			//folio = p_file_area->pages[i];
 			folio = rcu_dereference(p_file_area->pages[i]);
 			/*如果folio是file_area的索引，则对folio清NULL，避免folio干扰后续判断*/
 			folio_is_file_area_index_or_shadow_and_clear_NULL(folio);
@@ -548,8 +533,6 @@ static bool inode_do_switch_wbs(struct inode *inode,
 	/*page的从xarray tree delete和 保存到xarray tree 两个过程因为加锁防护，不会并发执行，因此不用担心下边的
 	 *找到的folio是file_area*/
 	if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)){
-		//smp_rmb();
-		//if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))
 			return inode_do_switch_wbs_for_file_area(inode,old_wb,new_wb);
 	}
 #endif	

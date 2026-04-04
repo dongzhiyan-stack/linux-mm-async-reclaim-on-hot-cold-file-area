@@ -377,7 +377,6 @@ static int expected_page_refs(struct address_space *mapping, struct page *page)
 int folio_migrate_mapping_for_file_area(struct address_space *mapping,
 		struct folio *newfolio, struct folio *folio, int extra_count)
 {
-	//XA_STATE(xas, &mapping->i_pages, folio_index(folio));
 	XA_STATE(xas, &mapping->i_pages, folio_index(folio) >> PAGE_COUNT_IN_AREA_SHIFT);
 	struct zone *oldzone, *newzone;
 	int dirty;
@@ -435,7 +434,6 @@ int folio_migrate_mapping_for_file_area(struct address_space *mapping,
 		folio_set_dirty(newfolio);
 	}
 
-	//xas_store(&xas, newfolio);
 	/*如果此时file_stat或者file_area cold_file_stat_delete()、cold_file_area_delete被释放了，那肯定是不合理的
 	 *这里会触发panic*/
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
@@ -446,11 +444,9 @@ int folio_migrate_mapping_for_file_area(struct address_space *mapping,
 		panic("%s mapping:0x%llx p_file_area:0x%llx error\n",__func__,(u64)mapping,(u64)p_file_area);
 
 	p_file_area = entry_to_file_area(p_file_area);
-	//if(folio != (struct folio *)p_file_area->pages[page_offset_in_file_area]){
 	if(folio != (struct folio *)rcu_dereference(p_file_area->pages[page_offset_in_file_area])){
 		panic("%s mapping:0x%llx folio:0x%llx != p_file_area->pages:0x%llx\n",__func__,(u64)mapping,(u64)folio,(u64)p_file_area->pages[page_offset_in_file_area]);
 	}
-	//p_file_area->pages[page_offset_in_file_area] = newfolio;
 	rcu_assign_pointer(p_file_area->pages[page_offset_in_file_area],newfolio);
 	FILE_AREA_PRINT1("%s mapping:0x%llx p_file_area:0x%llx folio:0x%llx newfolio:0x%llx page_offset_in_file_area:%d\n",__func__,(u64)mapping,(u64)p_file_area,(u64)folio,(u64)newfolio,page_offset_in_file_area);
 

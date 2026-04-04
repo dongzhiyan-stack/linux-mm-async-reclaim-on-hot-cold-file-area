@@ -2397,7 +2397,6 @@ void __init page_writeback_init(void)
 static void tag_pages_for_writeback_for_file_area(struct address_space *mapping,
 		pgoff_t start, pgoff_t end)
 {
-	//XA_STATE(xas, &mapping->i_pages, start);
 	XA_STATE(xas, &mapping->i_pages, start >> PAGE_COUNT_IN_AREA_SHIFT);
 	unsigned int tagged = 0;
 	void *page;
@@ -2412,23 +2411,11 @@ static void tag_pages_for_writeback_for_file_area(struct address_space *mapping,
 	/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 	xas_lock_irq(&xas);
 
-	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
 	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
-	/* 必须要在rcu_read_lock()后，再执行smp_rmb()，再判断mapping->rh_reserved1指向的file_stat是否有效。
-	 * 因为这个文件file_stat可能长时间没访问，此时cold_file_stat_delete()正并发释放mapping->rh_reserved1
-	 * 指向的这个file_stat结构，并且赋值mapping->rh_reserved1=1。rcu_read_lock()保证file_stat不会立即被释放。 
-	 * smp_rmb()是要立即感知到mapping->rh_reserved1的最新值——即1。还有，p_file_stat = (struct file_stat *)mapping->rh_reserved1
-	 * 赋值必须放到smp_rmb()内存屏障前边，因为可能这里赋值时mapping->rh_reserved1还是正常，smp_rmb()执行后，
-	 * IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)执行时mapping->rh_reserved1已经被cold_file_stat_delete()赋值1了。
-	 * 如果不用smp_rmb()内存屏障隔开，可能会出现if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))先执行，此时
-	 * mapping->rh_reserved1还是正常的，但是再等执行p_file_stat = (struct file_stat *)mapping->rh_reserved1就是1了，
-	 * 此时就错过判断mapping->rh_reserved1非法了，然后执行mapping->rh_reserved1这个file_stat而crash!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-	 * */
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
 		printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
 
-	//xas_for_each_marked(&xas, page, end, PAGECACHE_TAG_DIRTY) {
 	xas_for_each_marked(&xas, p_file_area, file_area_end_index, PAGECACHE_TAG_DIRTY) {
 		if(!is_file_area_entry(p_file_area))
 			panic("%s mapping:0x%llx p_file_area:0x%llx  error\n",__func__,(u64)mapping,(u64)p_file_area);
@@ -2505,8 +2492,6 @@ void tag_pages_for_writeback(struct address_space *mapping,
 	/*page的从xarray tree delete和 保存到xarray tree 两个过程因为加锁防护，不会并发执行，因此不用担心下边的
 	 *找到的folio是file_area*/
 	if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)){
-		//smp_rmb();
-		//if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))
 			return tag_pages_for_writeback_for_file_area(mapping,start,end);
 	}
 #endif
@@ -2875,18 +2860,8 @@ static void __folio_mark_dirty_for_file_area(struct folio *folio, struct address
 
 	/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 	xa_lock_irqsave(&mapping->i_pages, flags);
-	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
 	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
-	/* 必须要在rcu_read_lock()后，再执行smp_rmb()，再判断mapping->rh_reserved1指向的file_stat是否有效。
-	 * 因为这个文件file_stat可能长时间没访问，此时cold_file_stat_delete()正并发释放mapping->rh_reserved1
-	 * 指向的这个file_stat结构，并且赋值mapping->rh_reserved1=1。rcu_read_lock()保证file_stat不会立即被释放。 
-	 * smp_rmb()是要立即感知到mapping->rh_reserved1的最新值——即1。还有，p_file_stat = (struct file_stat *)mapping->rh_reserved1
-	 * 赋值必须放到smp_rmb()内存屏障前边，因为可能这里赋值时mapping->rh_reserved1还是正常，smp_rmb()执行后，
-	 * IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)执行时mapping->rh_reserved1已经被cold_file_stat_delete()赋值1了。
-	 * 如果不用smp_rmb()内存屏障隔开，可能会出现if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))先执行，此时
-	 * mapping->rh_reserved1还是正常的，但是再等执行p_file_stat = (struct file_stat *)mapping->rh_reserved1就是1了，
-	 * 此时就错过判断mapping->rh_reserved1非法了，然后执行mapping->rh_reserved1这个file_stat而crash!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-	 * */
+
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
         printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
@@ -2899,8 +2874,7 @@ static void __folio_mark_dirty_for_file_area(struct folio *folio, struct address
 
 		WARN_ON_ONCE(warn && !folio_test_uptodate(folio));
 		folio_account_dirtied(folio, mapping);
-		//__xa_set_mark(&mapping->i_pages, folio_index(folio),
-		//		PAGECACHE_TAG_DIRTY);
+		
 		p_file_area = xas_load(&xas);
 		if(!is_file_area_entry(p_file_area)){
 			panic("%s mapping:0x%llx p_file_area:0x%llx  error\n",__func__,(u64)mapping,(u64)p_file_area);
@@ -2943,8 +2917,6 @@ void __folio_mark_dirty(struct folio *folio, struct address_space *mapping,
 	/*page的从xarray tree delete和 保存到xarray tree 两个过程因为加锁防护，不会并发执行，因此不用担心下边的
 	 *找到的folio是file_area*/
 	if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)){
-		//smp_rmb();
-		//if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))
 			return __folio_mark_dirty_for_file_area(folio,mapping,warn);
 	}
 #endif
@@ -3244,25 +3216,11 @@ static bool __folio_end_writeback_for_file_area(struct folio *folio)
 		unsigned int page_offset_in_file_area = folio_index(folio) & PAGE_COUNT_IN_AREA_MASK;
 			
 		xa_lock_irqsave(&mapping->i_pages, flags);
-		//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
-		//p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
-		/* 必须要在rcu_read_lock()后，再执行smp_rmb()，再判断mapping->rh_reserved1指向的file_stat是否有效。
-		 * 因为这个文件file_stat可能长时间没访问，此时cold_file_stat_delete()正并发释放mapping->rh_reserved1
-		 * 指向的这个file_stat结构，并且赋值mapping->rh_reserved1=1。rcu_read_lock()保证file_stat不会立即被释放。 
-		 * smp_rmb()是要立即感知到mapping->rh_reserved1的最新值——即1。还有，p_file_stat = (struct file_stat *)mapping->rh_reserved1
-		 * 赋值必须放到smp_rmb()内存屏障前边，因为可能这里赋值时mapping->rh_reserved1还是正常，smp_rmb()执行后，
-		 * IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)执行时mapping->rh_reserved1已经被cold_file_stat_delete()赋值1了。
-		 * 如果不用smp_rmb()内存屏障隔开，可能会出现if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))先执行，此时
-		 * mapping->rh_reserved1还是正常的，但是再等执行p_file_stat = (struct file_stat *)mapping->rh_reserved1就是1了，
-		 * 此时就错过判断mapping->rh_reserved1非法了，然后执行mapping->rh_reserved1这个file_stat而crash!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-		 * */
 		smp_rmb();
 		if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
 			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
 		
 		ret = folio_xor_flags_has_waiters(folio, 1 << PG_writeback);
-		//__xa_clear_mark(&mapping->i_pages, folio_index(folio),
-		//			PAGECACHE_TAG_WRITEBACK);
 
 		p_file_area = xas_load(&xas);
 		if(!is_file_area_entry(p_file_area)){
@@ -3320,8 +3278,6 @@ bool __folio_end_writeback(struct folio *folio)
 	/*page的从xarray tree delete和 保存到xarray tree 两个过程因为加锁防护，不会并发执行，因此不用担心下边的
 	 *找到的folio是file_area*/
 	if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)){
-		//smp_rmb();
-		//if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))
 			return __folio_end_writeback_for_file_area(folio);
 	}
 #endif
@@ -3372,7 +3328,6 @@ static void __folio_start_writeback_for_file_area(struct folio *folio, bool keep
 
 	folio_memcg_lock(folio);
 	if (mapping && mapping_use_writeback_tags(mapping)) {
-		//XA_STATE(xas, &mapping->i_pages, folio_index(folio));
 		XA_STATE(xas, &mapping->i_pages, folio_index(folio) >> PAGE_COUNT_IN_AREA_SHIFT);
 		struct inode *inode = mapping->host;
 		struct backing_dev_info *bdi = inode_to_bdi(inode);
@@ -3385,23 +3340,11 @@ static void __folio_start_writeback_for_file_area(struct folio *folio, bool keep
 		unsigned int page_offset_in_file_area = folio_index(folio) & PAGE_COUNT_IN_AREA_MASK;
 
 		xas_lock_irqsave(&xas, flags);
-		//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
 		p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
-		/* 必须要在rcu_read_lock()后，再执行smp_rmb()，再判断mapping->rh_reserved1指向的file_stat是否有效。
-		 * 因为这个文件file_stat可能长时间没访问，此时cold_file_stat_delete()正并发释放mapping->rh_reserved1
-		 * 指向的这个file_stat结构，并且赋值mapping->rh_reserved1=1。rcu_read_lock()保证file_stat不会立即被释放。 
-		 * smp_rmb()是要立即感知到mapping->rh_reserved1的最新值——即1。还有，p_file_stat = (struct file_stat *)mapping->rh_reserved1
-		 * 赋值必须放到smp_rmb()内存屏障前边，因为可能这里赋值时mapping->rh_reserved1还是正常，smp_rmb()执行后，
-		 * IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)执行时mapping->rh_reserved1已经被cold_file_stat_delete()赋值1了。
-		 * 如果不用smp_rmb()内存屏障隔开，可能会出现if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))先执行，此时
-		 * mapping->rh_reserved1还是正常的，但是再等执行p_file_stat = (struct file_stat *)mapping->rh_reserved1就是1了，
-		 * 此时就错过判断mapping->rh_reserved1非法了，然后执行mapping->rh_reserved1这个file_stat而crash!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-		 * */
 		smp_rmb();
 		if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
 			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
 		
-		//xas_load(&xas);
 		p_file_area = xas_load(&xas);
 		/*此时file_area不可能非法*/
 		if(!is_file_area_entry(p_file_area)){
@@ -3435,7 +3378,6 @@ static void __folio_start_writeback_for_file_area(struct folio *folio, bool keep
 		if (mapping->host && !on_wblist)
 			sb_mark_inode_writeback(mapping->host);
 		if (!folio_test_dirty(folio)){
-			//xas_clear_mark(&xas, PAGECACHE_TAG_DIRTY);
 			
 			/*上边此时只是标记file_area的dirty mark，这里标记file_area里的page的dirty mark。
 			 *错了，只有file_area的page的dirty mark标记位全被清理掉，才能清理file_area的mark标记*/
@@ -3444,7 +3386,6 @@ static void __folio_start_writeback_for_file_area(struct folio *folio, bool keep
 				xas_clear_mark(&xas, PAGECACHE_TAG_DIRTY);
 		}
 		if (!keep_write){
-			//xas_clear_mark(&xas, PAGECACHE_TAG_TOWRITE);
 			
 			/*上边此时只是标记file_area的towrite mark，这里标记file_area里的page的towrite mark
 			 *错了，只有file_area的page的towrite mark标记位全被清理掉，才能清理file_area的mark标记*/
@@ -3479,8 +3420,6 @@ void __folio_start_writeback(struct folio *folio, bool keep_write)
 	/*page的从xarray tree delete和 保存到xarray tree 两个过程因为加锁防护，不会并发执行，因此不用担心下边的
 	 *找到的folio是file_area*/
 	if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)){
-		//smp_rmb();
-		//if(IS_SUPPORT_FILE_AREA_READ_WRITE(mapping))
 			return __folio_start_writeback_for_file_area(folio,keep_write);
 	}
 #endif
