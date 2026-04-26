@@ -56,6 +56,33 @@
 #include "async_memory_reclaim_for_cold_file_area.h"
 
 /*****proc文件系统**********************************************************************************************************************/
+static int  multi_level_file_area_printk_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", multi_level_file_area_printk);
+	return 0;
+}
+static int  multi_level_file_area_printk_open(struct inode *inode, struct file *file)
+{
+	return single_open(file,  multi_level_file_area_printk_show, NULL);
+}
+static ssize_t  multi_level_file_area_printk_write(struct file *file,
+				const char __user *buffer, size_t count, loff_t *ppos)
+{
+	int rc;
+	unsigned int val;
+	rc = kstrtouint_from_user(buffer, count, 10,&val);
+	if (rc)
+		return rc;
+	multi_level_file_area_printk = val;
+	return count;
+}
+static const struct proc_ops  multi_level_file_area_printk_fops = {
+	.proc_open		=  multi_level_file_area_printk_open,
+	.proc_read		= seq_read,
+	.proc_lseek     = seq_lseek,
+	.proc_release	= single_release,
+	.proc_write		=  multi_level_file_area_printk_write,
+};
 //memory_zone_solve_age_order
 static int memory_zone_solve_age_order_show(struct seq_file *m, void *v)
 {
@@ -910,7 +937,7 @@ static ssize_t file_stat_debug_or_make_backlist_write(struct file *file,
 {
 	char *file_path = NULL;
 	char *p;
-	struct file *file_temp;
+	struct file *file_temp = NULL;
 	struct inode *inode = NULL;
 	struct file_stat_base *p_file_stat_base;
 	int ret = 0,file_blacklist = 0,file_debug = 0;
@@ -1642,6 +1669,11 @@ static int hot_cold_file_proc_init(struct hot_cold_file_global *p_hot_cold_file_
 		return -1;
 	}
 
+	p = proc_create("multi_level_file_area_printk", S_IRUGO | S_IWUSR, hot_cold_file_proc_root,&multi_level_file_area_printk_fops);
+	if (!p){
+		printk("multi_level_file_area_printk fail\n");
+		return -1;
+	}
 	return 0;
 }
 /*static int hot_cold_file_proc_exit(struct hot_cold_file_global *p_hot_cold_file_global)
@@ -1755,7 +1787,7 @@ static void wakeup_kswapd_handler_post(struct kprobe *p, struct pt_regs *regs,
 			/*即便kprobe_buf_count等于KPROBE_BUF_SIZE，但是snprintf(...PROTECT_SIZE-20)限制了此次snprintf保存的字符串长度也不会超过PROTECT_SIZE，
 			 *自然不会超出kprobe_buf数组大小(KPROBE_BUF_SIZE+PROTECT_SIZE)*/
 			len = snprintf(kprobe_buf + kprobe_buf_count,PROTECT_SIZE - 20, "%s %s free:%ld high:%ld %ld %ld \n",wakeup_zone_name,zone->name,zone_page_state(zone, NR_FREE_PAGES),high_wmark_pages(zone),low_wmark_pages(zone),min_wmark_pages(zone));
-			printk("%s",kprobe_buf + kprobe_buf_count);
+			MULTI_LEVEL_FILE_AREA_PRINTK("%s",kprobe_buf + kprobe_buf_count);
 			kprobe_buf_count += len;
 
 			if(strlen(wakeup_zone_name))
@@ -2008,6 +2040,7 @@ static int __init setup_cold_file_area_reclaim_support_fs(char *buf)
 		unsigned char fs_count = 0;
 
 		hot_cold_file_global_info.support_fs_type = SUPPORT_FS_SINGLE;
+		async_memory_reclaim_status = 1;
 		buf += 3;
 		buf_head = buf;
 		printk("1:setup_cold_file_area_reclaim_support_fs:%s\n",buf);
@@ -2043,6 +2076,7 @@ static int __init setup_cold_file_area_reclaim_support_fs(char *buf)
 			return -1;
 
 		hot_cold_file_global_info.support_fs_type = SUPPORT_FS_UUID;
+		async_memory_reclaim_status = 1;
 	}
 
 	return 0;

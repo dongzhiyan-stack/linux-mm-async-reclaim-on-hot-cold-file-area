@@ -98,9 +98,10 @@
 struct hot_cold_file_global hot_cold_file_global_info = {
 	.support_fs_type = -1,
 };
-unsigned long async_memory_reclaim_status = 1;
+unsigned long async_memory_reclaim_status = 0;
 
-#define is_memory_idle_but_normal_zone_memory_tiny(p_hot_cold_file_global) (IS_MEMORY_ENOUGH(p_hot_cold_file_global) && zone_page_state(p_hot_cold_file_global->normal_zone, NR_FREE_PAGES) < p_hot_cold_file_global->normal_zone_high_wmark_reclaim)
+//#define is_memory_idle_but_normal_zone_memory_tiny(p_hot_cold_file_global) (p_hot_cold_file_global->normal_zone && IS_MEMORY_ENOUGH(p_hot_cold_file_global) && zone_page_state(p_hot_cold_file_global->normal_zone, NR_FREE_PAGES) < p_hot_cold_file_global->normal_zone_high_wmark_reclaim)
+#define is_memory_idle_but_normal_zone_memory_tiny(p_hot_cold_file_global) (IS_MEMORY_ENOUGH(p_hot_cold_file_global) && zone_page_state(p_hot_cold_file_global->zone[MAX_PAGES_ZONE], NR_FREE_PAGES) < zone_page_state(p_hot_cold_file_global->zone[MAX_PAGES_ZONE], NR_FREE_PAGES))
 
 unsigned int file_area_in_update_count;
 unsigned int file_area_in_update_lock_count;
@@ -111,6 +112,7 @@ int shrink_page_printk_open1;
 int shrink_page_printk_open_important;
 int shrink_page_printk_open;
 
+int multi_level_file_area_printk;
 unsigned int xarray_tree_node_cache_hit;
 int open_file_area_printk = 0;
 int open_file_area_printk_important = 0;
@@ -119,7 +121,7 @@ int warm_list_printk = 0;
 static void change_global_age_dx(struct hot_cold_file_global *p_hot_cold_file_global);
 static void change_global_age_dx_for_mmap_file(struct hot_cold_file_global *p_hot_cold_file_global);
 extern void deactivate_file_folio(struct folio *folio);
-static noinline int check_memory_reclaim_necessary(struct hot_cold_file_global *p_hot_cold_file_global);
+static noinline int check_memory_reclaim_necessary(struct hot_cold_file_global *p_hot_cold_file_global,char limit_printk);
 
 int cold_file_area_delete_quick(struct hot_cold_file_global *p_hot_cold_file_global,struct file_stat_base *p_file_stat_base,struct file_area *p_file_area);
 void get_file_area_age_mmap(struct file_stat_base *p_file_stat_base,struct file_area *p_file_area,struct hot_cold_file_global *p_hot_cold_file_global,char *file_stat_changed,/*unsigned int file_stat_list_type,*/unsigned int file_type,char is_global_file_stat);
@@ -1324,7 +1326,7 @@ inline char get_file_area_age_quick(struct file_stat_base *p_file_stat_base,stru
 /*特别注意，调用该函数的,传入的file_area，不仅有file_stat->temp、warm链表上的，还有file_stat->hot、mapcount链表上的!!!!!!!!!*/
 void get_file_area_age_mmap(struct file_stat_base *p_file_stat_base,struct file_area *p_file_area,struct hot_cold_file_global *p_hot_cold_file_global,char *file_stat_changed,/*unsigned int file_stat_list_type,*/unsigned int file_type,char is_global_file_stat)
 {
-	struct folio *folio;
+	struct folio *folio = NULL;
 	unsigned long vm_flags;
 	int ret,i;
 	unsigned char mmap_page_count = 0,mapcount_file_area = 0;
@@ -1812,7 +1814,8 @@ static unsigned long cold_file_isolate_lru_pages_and_shrink(struct hot_cold_file
 				 * p_file_area->mapping=NULL。代码代码执行到这里，file_area的folio肯定不是NULL，smp_rmb()后，p_file_area->mapping肯定不是NULL。
 				 * 如果这里p_file_area->mapping却是NULL，则触发panic*/
 				smp_rmb();
-				if(NULL == p_file_area->mapping)
+				///*if(NULL == p_file_area->mapping)
+				if(NULL == p_file_area->mapping && file_area_have_page(p_file_area))
 					panic("%s file_stat:0x%llx file_area:0x%llx status:0x%x page:0x%llx flags:0x%lx page->mapping:0x%llx != mapping:0x%llx NULL\n",__func__,(u64)p_file_stat_base,(u64)p_file_area,p_file_area->file_area_state,(u64)folio,folio->flags,(u64)folio->mapping,(u64)p_file_stat_base->mapping);
 
 			    /*参照find_lock_entries()对内存回收失败的page的处理，先folio_unlock后folio_put*/
@@ -2560,9 +2563,10 @@ static void file_stat_other_list_file_area_solve_common(struct hot_cold_file_glo
 	unsigned int file_area_free_to_refault_list_count = 0;
 	struct file_stat *p_file_stat = NULL;
 	char file_stat_changed;
-	unsigned int file_area_age_dx;
+	unsigned int file_area_age_dx = 0;
 	char is_global_file_stat = file_stat_in_global_base(p_file_stat_base);
 	char ret;
+	unsigned int file_area_hot_to_temp_age_dx = p_hot_cold_file_global->file_area_hot_to_temp_age_dx;
 
 	/* 最新方案，iput()->find_get_entry_for_file_area()不再把file_area以file_area->file_area_delete移动到global_file_stat_delete
 	 * 链表，而只是标记file_area的in_mapping_delete。异步内存回收线程看到file_area有in_maping_delete标记，再把file_area以
@@ -2572,7 +2576,7 @@ find_global_file_area_in_mapping:
 		if(!is_global_file_stat)
 			panic("%s file_stat:0x%llx  file_area:0x%llx status:0x%x not in global\n",__func__,(u64)p_file_stat,(u64)p_file_area,p_file_area->file_area_state);
 
-		printk("%s file_stat:0x%llx  file_area:0x%llx status:0x%x in_mapping_delete\n",__func__,(u64)p_file_stat,(u64)p_file_area,p_file_area->file_area_state);
+		MULTI_LEVEL_FILE_AREA_PRINTK("%s file_stat:0x%llx  file_area:0x%llx status:0x%x in_mapping_delete\n",__func__,(u64)p_file_stat,(u64)p_file_area,p_file_area->file_area_state);
 		if(file_stat_in_cache_file_base(p_file_stat_base))
 			list_move(&p_file_area->file_area_list,&p_hot_cold_file_global->global_file_stat.file_area_delete_list);
 		else
@@ -2600,7 +2604,7 @@ find_global_file_area_in_mapping:
 
 	switch (file_area_type){
 		case (1 << F_file_area_in_hot_list):
-			unsigned int file_area_hot_to_temp_age_dx;
+			//unsigned int file_area_hot_to_temp_age_dx;used also in F_file_area_in_mapcount_list branch.declar in function start
 
 			if(!file_area_in_hot_list(p_file_area) || file_area_in_hot_list_error(p_file_area))
 				panic("%s file_stat:0x%llx file_area:0x%llx status:0x%x not in file_area_hot\n",__func__,(u64)p_file_stat_base,(u64)p_file_area,p_file_area->file_area_state);
@@ -2668,7 +2672,8 @@ find_global_file_area_in_mapping:
 
 			break;
 		case (1 << F_file_area_in_refault_list):
-			unsigned int file_area_refault_to_temp_age_dx;
+			;
+			unsigned int file_area_refault_to_temp_age_dx = 0;
 			if(!file_area_in_refault_list(p_file_area) || file_area_in_refault_list_error(p_file_area))
 				panic("%s file_stat:0x%llx file_area:0x%llx status:0x%x not in file_area_refault\n",__func__,(u64)p_file_stat_base,(u64)p_file_area,p_file_area->file_area_state);
 
@@ -2729,7 +2734,8 @@ find_global_file_area_in_mapping:
 
 			break;
 		case (1 << F_file_area_in_free_list):
-			unsigned int file_area_free_age_dx,file_area_temp_to_cold_age_dx;
+			;
+			unsigned int file_area_free_age_dx = 0,file_area_temp_to_cold_age_dx = 0;
 			if(!file_area_in_free_list(p_file_area) || file_area_in_temp_list(p_file_area) /*|| file_area_in_warm_list(p_file_area)*/ || file_area_in_mapcount_list(p_file_area))
 				panic("%s file_stat:0x%llx file_area:0x%llx status:0x%x error in_free\n",__func__,(u64)p_file_stat_base,(u64)p_file_area,p_file_area->file_area_state);
 
@@ -2831,7 +2837,8 @@ find_global_file_area_in_mapping:
 
 			break;
 		case (1 << F_file_area_in_mapcount_list):
-			struct folio *folio;
+			;
+			struct folio *folio = NULL;
 			int i;
 			int print_once = 0;
 
@@ -3073,6 +3080,7 @@ inline static int check_memory_reclaim_efficiency(struct hot_cold_file_global *p
 				return 1;
 			break;
 		default:
+			break;
 	}
 	return 0;
 }
@@ -3315,7 +3323,7 @@ next_file_area:
 
 			/*现在每个文件的scan_file_area_max不受全局scan_file_area_max影响了，而是每个内存内存回收前，执行check_file_area_refault_and_scan_max()确定*/
 			if(scan_file_area_count > scan_file_area_max){
-				printk("2:%s:file_stat:0x%llx status:0x%x scan_file_area_count:%d > scan_file_area_max:%d break file_type:%d\n",__func__,(u64)p_file_stat_base,p_file_stat_base->file_stat_status,scan_file_area_count,scan_file_area_max,file_type);
+				MULTI_LEVEL_FILE_AREA_PRINTK ("2:%s:file_stat:0x%llx status:0x%x scan_file_area_count:%d > scan_file_area_max:%d break file_type:%d\n",__func__,(u64)p_file_stat_base,p_file_stat_base->file_stat_status,scan_file_area_count,scan_file_area_max,file_type);
 				break;
 			}
 
@@ -4287,7 +4295,7 @@ static unsigned int global_file_stat_zero_page_file_area_list_solve(struct hot_c
 
 		/*file_area的文件被iput()了*/
 		if(file_area_in_mapping_delete(p_file_area)){
-			printk("%s p_global_file_stat:0x%llx  file_area:0x%llx status:0x%x in_mapping_delete\n",__func__,(u64)p_global_file_stat,(u64)p_file_area,p_file_area->file_area_state);
+			MULTI_LEVEL_FILE_AREA_PRINTK("%s p_global_file_stat:0x%llx  file_area:0x%llx status:0x%x in_mapping_delete\n",__func__,(u64)p_global_file_stat,(u64)p_file_area,p_file_area->file_area_state);
 			if(file_stat_in_cache_file_base(&p_global_file_stat->file_stat.file_stat_base))
 				list_move(&p_file_area->file_area_list,&p_hot_cold_file_global->global_file_stat.file_area_delete_list);
 			else
@@ -4425,26 +4433,26 @@ static void  print_file_stat_memory_reclaim_info(struct file_stat_base *p_file_s
 	if(p_file_stat_base->mapping)
 		nrpages = p_file_stat_base->mapping->nrpages;
 
-	printk("%s memory_pressure_level:%d memory_still_memrgency_after_reclaim:%d all_reclaim_pages_one_period:%d file_stat:0x%llx pages:%ld status 0x%x is_cache_file:%d is_global:%d is_writeonly_file:%d scan_file_area_count:%d scan_file_area_max:%d scan_exit_file_area_count:%d scan_zero_page_file_area_count:%d warm_list_file_area_up_count:%d warm_list_file_area_down_count:%d warm_list_file_area_to_writeonly_list_count:%d warm_list_file_area_to_writeonly_list_count_cold:%d direct_reclaim_pages_form_writeonly_file:%d scan_file_area_count_form_writeonly_file:%d scan_other_list_file_area_count:%d scan_file_area_max_for_memory_reclaim:%d scan_file_area_count_reclaim_fail:%d\n",__func__,p_hot_cold_file_global->memory_pressure_level,p_hot_cold_file_global->memory_still_memrgency_after_reclaim,p_hot_cold_file_global->all_reclaim_pages_one_period,(u64)p_file_stat_base,nrpages,p_file_stat_base->file_stat_status,file_stat_in_cache_file_base(p_file_stat_base),file_stat_in_global_base(p_file_stat_base),file_stat_in_writeonly_base(p_file_stat_base),p_memory_reclaim_info->scan_file_area_count,p_memory_reclaim_info->scan_file_area_max,p_memory_reclaim_info->scan_exit_file_area_count,p_memory_reclaim_info->scan_zero_page_file_area_count,p_memory_reclaim_info->warm_list_file_area_up_count,p_memory_reclaim_info->warm_list_file_area_down_count,p_memory_reclaim_info->warm_list_file_area_to_writeonly_list_count,p_memory_reclaim_info->warm_list_file_area_to_writeonly_list_count_cold,p_memory_reclaim_info->direct_reclaim_pages_form_writeonly_file,p_memory_reclaim_info->scan_file_area_count_form_writeonly_file,p_memory_reclaim_info->scan_other_list_file_area_count,p_memory_reclaim_info->scan_file_area_max_for_memory_reclaim,p_memory_reclaim_info->scan_file_area_count_reclaim_fail);
+	MULTI_LEVEL_FILE_AREA_PRINTK("%s memory_pressure_level:%d memory_still_memrgency_after_reclaim:%d all_reclaim_pages_one_period:%d file_stat:0x%llx pages:%ld status 0x%x is_cache_file:%d is_global:%d is_writeonly_file:%d scan_file_area_count:%d scan_file_area_max:%d scan_exit_file_area_count:%d scan_zero_page_file_area_count:%d warm_list_file_area_up_count:%d warm_list_file_area_down_count:%d warm_list_file_area_to_writeonly_list_count:%d warm_list_file_area_to_writeonly_list_count_cold:%d direct_reclaim_pages_form_writeonly_file:%d scan_file_area_count_form_writeonly_file:%d scan_other_list_file_area_count:%d scan_file_area_max_for_memory_reclaim:%d scan_file_area_count_reclaim_fail:%d\n",__func__,p_hot_cold_file_global->memory_pressure_level,p_hot_cold_file_global->memory_still_memrgency_after_reclaim,p_hot_cold_file_global->all_reclaim_pages_one_period,(u64)p_file_stat_base,nrpages,p_file_stat_base->file_stat_status,file_stat_in_cache_file_base(p_file_stat_base),file_stat_in_global_base(p_file_stat_base),file_stat_in_writeonly_base(p_file_stat_base),p_memory_reclaim_info->scan_file_area_count,p_memory_reclaim_info->scan_file_area_max,p_memory_reclaim_info->scan_exit_file_area_count,p_memory_reclaim_info->scan_zero_page_file_area_count,p_memory_reclaim_info->warm_list_file_area_up_count,p_memory_reclaim_info->warm_list_file_area_down_count,p_memory_reclaim_info->warm_list_file_area_to_writeonly_list_count,p_memory_reclaim_info->warm_list_file_area_to_writeonly_list_count_cold,p_memory_reclaim_info->direct_reclaim_pages_form_writeonly_file,p_memory_reclaim_info->scan_file_area_count_form_writeonly_file,p_memory_reclaim_info->scan_other_list_file_area_count,p_memory_reclaim_info->scan_file_area_max_for_memory_reclaim,p_memory_reclaim_info->scan_file_area_count_reclaim_fail);
 
 	p_memory_info  = &p_memory_reclaim_info->memory_reclaim_info_writeonly_list;
-	pr_info("writeonly_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
+	MULTI_LEVEL_FILE_AREA_PRINTK("writeonly_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
 
 	p_memory_info  = &p_memory_reclaim_info->memory_reclaim_info_warm_cold_list;
 	if(p_memory_info->scan_file_area_count_in_reclaim)
-		pr_info("warm_cold_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
+		MULTI_LEVEL_FILE_AREA_PRINTK("warm_cold_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
 
 	p_memory_info  = &p_memory_reclaim_info->memory_reclaim_info_warm_middle_list;
 	if(p_memory_info->scan_file_area_count_in_reclaim)
-		pr_info("warm_middle_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
+		MULTI_LEVEL_FILE_AREA_PRINTK("warm_middle_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
 
 	p_memory_info  = &p_memory_reclaim_info->memory_reclaim_info_warm_list;
 	if(p_memory_info->scan_file_area_count_in_reclaim)
-		pr_info("warm_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
+		MULTI_LEVEL_FILE_AREA_PRINTK("warm_list reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
 
 	p_memory_info  = &p_memory_reclaim_info->memory_reclaim_info_direct_reclaim;
 	if(p_memory_info->scan_file_area_count_in_reclaim)
-		pr_info("writeonly_file_direct reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
+		MULTI_LEVEL_FILE_AREA_PRINTK("writeonly_file_direct reclaim_pages_count:%d scan_file_area_count_in_reclaim:%d scan_zero_page_file_area_count_in_reclaim:%d scan_warm_file_area_count:%d scan_file_area_count_reclaim_fail:%d\n",p_memory_info->reclaim_pages_count,p_memory_info->scan_file_area_count_in_reclaim,p_memory_info->scan_zero_page_file_area_count_in_reclaim,p_memory_info->scan_warm_file_area_count,p_memory_info->scan_file_area_count_reclaim_fail);
 
 }
 static noinline unsigned int file_stat_multi_level_warm_or_writeonly_list_file_area_solve(struct hot_cold_file_global *p_hot_cold_file_global, struct current_scan_file_stat_info *p_current_scan_file_stat_info,struct file_stat_base *p_file_stat_base,unsigned int *scan_file_area_max,char is_cache_file,unsigned int scan_file_area_max_for_memory_reclaim)
@@ -4569,7 +4577,7 @@ static noinline unsigned int file_stat_multi_level_warm_or_writeonly_list_file_a
 	 *有可能是readonly的file_area，这种file_area将来可能靠mult_warm_list_age_dx的参数升级到warm链表，故去掉限制*/
 	mult_warm_list_age_dx_level_solve(p_hot_cold_file_global,p_file_stat,is_global_file_stat,p_current_scan_file_stat_info->traverse_list_num,is_cache_file,&mult_warm_list_age_dx);
 
-	printk("%s: current_scan_file_stat_info:0x%llx file_stat:0x%llx 0x%x global:%d is_cache_file:%d traverse_list_num:%d file_area_cold_level:%d to_down_list_age_dx:%d to_writeonly_cold_list_age_dx:%d file_stat_file_area_free_age_dx:%d\n",__func__,(u64)p_current_scan_file_stat_info,(u64)p_file_stat_base,p_file_stat_base->file_stat_status,file_stat_in_global_base(p_file_stat_base),is_cache_file,p_current_scan_file_stat_info->traverse_list_num,mult_warm_list_age_dx.file_area_cold_level,mult_warm_list_age_dx.to_down_list_age_dx,mult_warm_list_age_dx.to_writeonly_cold_list_age_dx,p_hot_cold_file_global->file_stat_file_area_free_age_dx);
+	MULTI_LEVEL_FILE_AREA_PRINTK("%s: current_scan_file_stat_info:0x%llx file_stat:0x%llx 0x%x global:%d is_cache_file:%d traverse_list_num:%d file_area_cold_level:%d to_down_list_age_dx:%d to_writeonly_cold_list_age_dx:%d file_stat_file_area_free_age_dx:%d\n",__func__,(u64)p_current_scan_file_stat_info,(u64)p_file_stat_base,p_file_stat_base->file_stat_status,file_stat_in_global_base(p_file_stat_base),is_cache_file,p_current_scan_file_stat_info->traverse_list_num,mult_warm_list_age_dx.file_area_cold_level,mult_warm_list_age_dx.to_down_list_age_dx,mult_warm_list_age_dx.to_writeonly_cold_list_age_dx,p_hot_cold_file_global->file_stat_file_area_free_age_dx);
 
 	/* 重大隐藏bug：如果二者不相等，是否就一定是异常情况然后panic呢？目前想到一种情况：当前normal temp file_stat->warm链表上的file_area没有遍历完，
 	 * 但是大于scan_file_area_max于是结束遍历。等下次循环开始，本应该继续从global->temp链表尾选中这个file_stat开始遍历，但是该file_stat被iput()了，
@@ -4578,9 +4586,10 @@ static noinline unsigned int file_stat_multi_level_warm_or_writeonly_list_file_a
 	 * 从global->temp链表尾取出的是新的cache file_stat。而p_current_scan_file_stat_info->p_traverse_file_stat指向的file_stat已经转成mmap file_stat，
 	 * 而移动到global->temp mmap链表了。于是下边的if依然不成立，但是此时不能panic，而是要遍历新的file_stat*/
 	if(p_current_scan_file_stat_info->p_traverse_file_stat != p_file_stat){
+		struct file_stat_base *p_file_stat_base_temp = NULL;
 current_scan_file_stat_delete:
 
-		struct file_stat_base *p_file_stat_base_temp = &p_current_scan_file_stat_info->p_traverse_file_stat->file_stat_base;
+		p_file_stat_base_temp = &p_current_scan_file_stat_info->p_traverse_file_stat->file_stat_base;
 
 		if(file_stat_in_delete_base(p_file_stat_base_temp) || 
 				(file_stat_in_mmap_file_base(p_file_stat_base_temp) && file_stat_in_from_cache_file_base(p_file_stat_base_temp) && is_cache_file)){
@@ -4617,7 +4626,7 @@ current_scan_file_stat_delete:
 		reclaim_pages_file_area_count = 0;
 		p_hot_cold_file_global->memory_pressure_level = MEMORY_IDLE_SCAN;
 		p_hot_cold_file_global->memory_still_memrgency_after_reclaim = 0;
-		printk("%s memory_still_memrgency_after_reclaim:%d clear\n",__func__,p_hot_cold_file_global->memory_still_memrgency_after_reclaim);
+		MULTI_LEVEL_FILE_AREA_PRINTK("%s memory_still_memrgency_after_reclaim:%d clear\n",__func__,p_hot_cold_file_global->memory_still_memrgency_after_reclaim);
 
 		/*收到了预期内存，调小scan_file_area_max。如此如果短时间需要大量分配内存，能尽快扫描完，然后退回到get_file_area_from_file_stat_list()
 		 *此时is_memory_idle_but_normal_zone_memory_tiny()成立，立即退后到async_memory_reclaim_main_thread()，重新判断内存紧缺情况，
@@ -5674,7 +5683,7 @@ static unsigned int tiny_small_file_area_move_to_global_file_stat(struct hot_col
 				p_global_file_stat->file_stat.file_area_hot_count ++;
 				break;
 			case (1 << F_file_area_in_refault_list):
-				list_move(&p_file_area->file_area_list,&p_global_file_stat->file_stat.file_area_hot);
+				list_move(&p_file_area->file_area_list,&p_global_file_stat->file_area_refault);
 				break;
 				/*file_area同时具备in_free的in_refault属性的，那是in_free的被访问update函数设置了in_refault，要移动到file_stat->in_free链表，
 				 *因为这种属性的file_area就是在in_free链表，将来执行file_stat_other_list_file_area_solve_common()会把它移动到in_refault链表*/
@@ -6160,9 +6169,9 @@ static unsigned int get_file_area_from_file_stat_list_common(struct hot_cold_fil
 		}
 
 		/*内存紧急模式，write文件经过一次内存回收，连一半的文件页都没有回收掉，那就调小writeonly_file_age_dx，使回收write文件页的age冷却周期减小*/
-		if(warm_list_printk && AGE_DX_CHANGE_WRITEONLY_IN_EMERGENCY_RECLAIM == age_dx_change_type){
+		if(AGE_DX_CHANGE_WRITEONLY_IN_EMERGENCY_RECLAIM == age_dx_change_type){
 			unsigned int file_stat_nrpages = p_file_stat_base->mapping->nrpages;
-			printk("%s file_stat:0x%llx writeonly_file_recliam_pages before:%d after:%ld file_area_count:%d scan_file_area_count:%d recent_access_age:%d global_age:%d in_writeonly_list_file_count:%d\n",__func__,(u64)p_file_stat_base,file_stat_nrpages,p_file_stat_base->mapping->nrpages,p_file_stat_base->file_area_count,scan_file_area_count,p_file_stat_base->recent_access_age,p_hot_cold_file_global->global_age,p_hot_cold_file_global->in_writeonly_list_file_count);
+			MULTI_LEVEL_FILE_AREA_PRINTK("%s file_stat:0x%llx writeonly_file_recliam_pages before:%d after:%ld file_area_count:%d scan_file_area_count:%d recent_access_age:%d global_age:%d in_writeonly_list_file_count:%d\n",__func__,(u64)p_file_stat_base,file_stat_nrpages,p_file_stat_base->mapping->nrpages,p_file_stat_base->file_area_count,scan_file_area_count,p_file_stat_base->recent_access_age,p_hot_cold_file_global->global_age,p_hot_cold_file_global->in_writeonly_list_file_count);
 
 		}
 
@@ -6723,7 +6732,7 @@ static noinline void walk_throuth_all_file_area(struct hot_cold_file_global *p_h
 
 	memory_reclaim_param_solve(p_hot_cold_file_global,&memory_reclaim_param,is_cache_file);
 
-	printk("global_age:%d reclaim_pages_target:%d alreay_reclaim_pages:%d memory_pressure_level:%d memory_still_memrgency_after_reclaim:%d scan_temp_file_stat_max:%d scan_temp_file_area_max:%d scan_middle_file_stat_max:%d scan_middle_file_area_max:%d scan_large_file_stat_max:%d scan_large_file_area_max:%d scan_hot_file_area_max:%d file_area_temp_to_cold_age_dx:%d file_area_hot_to_temp_age_dx:%d file_area_refault_to_temp_age_dx:%d mapcount_file_area_max:%d scan_large_file_area_max:%d scan_large_file_stat_max:%d\n",p_hot_cold_file_global->global_age,p_hot_cold_file_global->reclaim_pages_target,p_hot_cold_file_global->alreay_reclaim_pages,p_hot_cold_file_global->memory_pressure_level,p_hot_cold_file_global->memory_still_memrgency_after_reclaim,param->scan_temp_file_stat_max,param->scan_temp_file_area_max,param->scan_middle_file_stat_max,param->scan_middle_file_area_max,param->scan_large_file_stat_max,param->scan_large_file_area_max,param->scan_hot_file_area_max,p_hot_cold_file_global->file_area_temp_to_cold_age_dx,p_hot_cold_file_global->file_area_hot_to_temp_age_dx,p_hot_cold_file_global->file_area_refault_to_temp_age_dx,param->mapcount_file_area_max,param->scan_large_file_area_max,param->scan_large_file_stat_max);
+	MULTI_LEVEL_FILE_AREA_PRINTK("global_age:%d reclaim_pages_target:%d alreay_reclaim_pages:%d memory_pressure_level:%d memory_still_memrgency_after_reclaim:%d scan_temp_file_stat_max:%d scan_temp_file_area_max:%d scan_middle_file_stat_max:%d scan_middle_file_area_max:%d scan_large_file_stat_max:%d scan_large_file_area_max:%d scan_hot_file_area_max:%d file_area_temp_to_cold_age_dx:%d file_area_hot_to_temp_age_dx:%d file_area_refault_to_temp_age_dx:%d mapcount_file_area_max:%d scan_large_file_area_max:%d scan_large_file_stat_max:%d\n",p_hot_cold_file_global->global_age,p_hot_cold_file_global->reclaim_pages_target,p_hot_cold_file_global->alreay_reclaim_pages,p_hot_cold_file_global->memory_pressure_level,p_hot_cold_file_global->memory_still_memrgency_after_reclaim,param->scan_temp_file_stat_max,param->scan_temp_file_area_max,param->scan_middle_file_stat_max,param->scan_middle_file_area_max,param->scan_large_file_stat_max,param->scan_large_file_area_max,param->scan_hot_file_area_max,p_hot_cold_file_global->file_area_temp_to_cold_age_dx,p_hot_cold_file_global->file_area_hot_to_temp_age_dx,p_hot_cold_file_global->file_area_refault_to_temp_age_dx,param->mapcount_file_area_max,param->scan_large_file_area_max,param->scan_large_file_stat_max);
 
 	if(is_cache_file){
 
@@ -6996,7 +7005,7 @@ inline static int memory_zone_solve(struct hot_cold_file_global *p_hot_cold_file
 }
 
 /*根据 内存碎片程度、每个内存zone可用内存、上次内存回收page数，决定本次是否进入紧急内存回收模式以及本次预期扫描的file_area个数*/
-static noinline int check_memory_reclaim_necessary(struct hot_cold_file_global *p_hot_cold_file_global)
+static noinline int check_memory_reclaim_necessary(struct hot_cold_file_global *p_hot_cold_file_global,char printk_level)
 {
 	/*内存紧张的程度*/
 	int memory_pressure_level = MEMORY_TINY;
@@ -7040,28 +7049,65 @@ static noinline int check_memory_reclaim_necessary(struct hot_cold_file_global *
 	 * 8:max_zone 和 second_zone  都大于2倍high阈值，且任何一个都没有内存碎片 MEMORY_IDLE_SCAN
 	 * */
 
-	if((MEMORY_ENOUGH == max_zone_state) || (MEMORY_ENOUGH ==  second_zone_state)){
+	/*总内存3.8G，min_free_kbytes=45056
+	 *  DMA    high:
+	 *  DMA32  high:24654 16649 8644   present:786290 2.9G
+	 *  Normal high:7469 5044 2619     present:262144 1G
+	 *
+	 *总内存4.3G，min_free_kbytes=67584
+	 *  DMA    high:86     72   58 
+	 *  DMA32  high:14456 12047 9638   present:782228 2.9G
+	 *  Normal high:11309 9510  7711   present:519168 1.9G
+	 *
+	 *总内存16G，min_free_kbytes=67584? 
+	 *  DMA    high:24 20 16
+	 *  DMA32  high:2523 2102 1683     present:478126  1.8G
+	 *  Normal high:32010 28211 24412  present:3670016 14G
+	 * 内存基本都集中在normal zone时，就不考虑dma32 zone的内存紧张情况了
+	 **/
 
-		if((MEMORY_ENOUGH == max_zone_state) && (MEMORY_ENOUGH ==  second_zone_state))/*情况8*/
-			memory_pressure_level = MEMORY_IDLE_SCAN;
-		else/*情况 5、6*/
-			memory_pressure_level = MEMORY_LITTLE_RECLAIM;
-
-	}else if((MEMORY_TINY == max_zone_state) || (MEMORY_TINY ==  second_zone_state)){
-
-		if((MEMORY_TINY == max_zone_state) && (MEMORY_TINY ==  second_zone_state))/*情况1*/
+	/* 下边判断memory_pressure_level的代码必须得应对错综复杂的情况
+	 * 1:rocky9.6 总内存4.3G，normal zone总内存1.9G，free内存(121M)是high阈值的三倍。dma32 zone内存2.9G内存，free内存略小于high阈值。
+	 *   此时kswapd进程就被唤醒而内存回收。
+	 * 2:安卓15，总内存3.8G，normal zone内存1G，free内存小于high阈值。dma32 zone内存2.9G，free内存(200M)是high阈值的3倍。此时
+	 * 竟然没有触发kswapd内存回收。并且normal zone的free内存很长时间低于high阈值。此时如果if((MEMORY_TINY == max_zone_state) || (MEMORY_TINY ==  second_zone_state))
+	 * memory_pressure_level = MEMORY_PRESSURE_RECLAIM 先赋值，就会一直因为normal zone内存偏低而疯狂触发内存回收，但实际内存并不是很紧缺。
+	 * 解决办法是：如果max_zone_state 内存充足，就不再触发内存回收了。但是此时rocky 9.6上肯定会因为normal zone free内存地址high阈值而触发kswapd内存回收呀。
+	 * 3:rocky9.6 总内存16G。normal zone内存14G，free内存小于high阈值。dma32 zone内存1.8G，free内存(60M)是high阈值的6倍。此时kswapd频繁被唤醒而内存回收。这个
+	 * 情况又必须if((MEMORY_TINY == max_zone_state) || (MEMORY_TINY ==  second_zone_state))  memory_pressure_level = MEMORY_PRESSURE_RECLAIM 赋值，跟第2点矛盾
+	 *
+	 * 解决方案暂定:优先只if(MEMORY_TINY == max_zone_state)判定max_zone_state内存是否紧张，如果两个zone都内存紧张则MEMORY_EMERGENCY_RECLAIM，否则MEMORY_PRESSURE_RECLAIM
+	 *
+	 * 还有一种情况，当总只有内存2G，根本没有normal zone，只有dma32 zone，此时second_zone是空，不能受这种情况干扰，second_zone_state初值赋值了-1*/
+	if(MEMORY_TINY == max_zone_state){
+		if(MEMORY_TINY ==  second_zone_state)
 			memory_pressure_level = MEMORY_EMERGENCY_RECLAIM;
-		else/*情况3，4*/
+		else
 			memory_pressure_level = MEMORY_PRESSURE_RECLAIM;
-
 	}else{
-		if((MEMORY_FRAGMENT == max_zone_state) || (MEMORY_FRAGMENT == second_zone_state))/*情况7*/
-			memory_pressure_level = MEMORY_LITTLE_RECLAIM;
-		else{/*情况2*/
-			if((MEMORY_MAY_TINY == max_zone_state) && (MEMORY_MAY_TINY == second_zone_state))
+		if((MEMORY_ENOUGH == max_zone_state) || (MEMORY_ENOUGH ==  second_zone_state)){
+
+			if((MEMORY_ENOUGH == max_zone_state) && (MEMORY_ENOUGH ==  second_zone_state))/*情况8*/
+				memory_pressure_level = MEMORY_IDLE_SCAN;
+			else/*情况 5、6*/
+				memory_pressure_level = MEMORY_LITTLE_RECLAIM;
+
+		}else if((MEMORY_TINY == max_zone_state) || (MEMORY_TINY ==  second_zone_state)){
+
+			if((MEMORY_TINY == max_zone_state) && (MEMORY_TINY ==  second_zone_state))/*情况1*/
+				memory_pressure_level = MEMORY_EMERGENCY_RECLAIM;
+			else/*情况3，4*/
 				memory_pressure_level = MEMORY_PRESSURE_RECLAIM;
-			else
-				panic("max_zone_state:%d second_zone_state:%d\n",max_zone_state,second_zone_state);
+
+		}else{
+			if((MEMORY_FRAGMENT == max_zone_state) || (MEMORY_FRAGMENT == second_zone_state))/*情况7*/
+				memory_pressure_level = MEMORY_LITTLE_RECLAIM;
+			else{/*情况2*/
+				if((MEMORY_MAY_TINY == max_zone_state) && (MEMORY_MAY_TINY == second_zone_state))
+					memory_pressure_level = MEMORY_PRESSURE_RECLAIM;
+				else
+					panic("max_zone_state:%d second_zone_state:%d\n",max_zone_state,second_zone_state);
+			}
 		}
 	}
 
@@ -7081,7 +7127,9 @@ out:
 		default:
 			p_hot_cold_file_global->reclaim_pages_target = 0;
 	}
-    printk("max_zone_state:%d second_zone_state:%d memory_pressure_level:%d reclaim_pages_target_for_max_zone:%d reclaim_pages_target_for_second_zone:%d\n",max_zone_state,second_zone_state,memory_pressure_level,reclaim_pages_target_for_max_zone,reclaim_pages_target_for_second_zone);	
+	if(printk_level){
+	    MULTI_LEVEL_FILE_AREA_PRINTK("printk_level:%d max_zone_state:%d second_zone_state:%d memory_pressure_level:%d reclaim_pages_target_for_max_zone:%d reclaim_pages_target_for_second_zone:%d\n",printk_level,max_zone_state,second_zone_state,memory_pressure_level,reclaim_pages_target_for_max_zone,reclaim_pages_target_for_second_zone);
+	}
 
 	return memory_pressure_level;
 }
@@ -7089,25 +7137,36 @@ out:
 int hot_cold_file_thread(void *p){
 	struct hot_cold_file_global *p_hot_cold_file_global = (struct hot_cold_file_global *)p;
 
-	int sleep_count;
-	int memory_pressure_level;
+	//int sleep_count;
+	unsigned long timeout;
+	int memory_pressure_level = 0;
 	/*设置为IDLE_MAX是为了第一次就能扫描文件file_stat，主要是为了扫描so、可执行文件 这种现在是mmap文件但最初被判定为cache文件*/
 	int idle_age_count = IDLE_MAX;
 
 	while(!kthread_should_stop()){
-		sleep_count = 0;
-		while(++sleep_count < p_hot_cold_file_global->global_age_period){
-			msleep(1000);
-		}
+		/*sleep wait 10s*/
+		timeout = jiffies + msecs_to_jiffies(p_hot_cold_file_global->global_age_period * 1000);
+		do{
+			/*内存紧张则唤醒异步内存回收线程。如果异步内存回收线程已经运行，该if不能成立了*/
+			if(test_bit(ASYNC_MEMORY_RECLAIM_ENABLE, &async_memory_reclaim_status) && !test_bit(MEMORY_IN_RECLAIM, &async_memory_reclaim_status)){
+				memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global,0);
+				if(memory_pressure_level >= MEMORY_PRESSURE_RECLAIM){
+					p_hot_cold_file_global->memory_pressure_level = memory_pressure_level;
+					wake_up_process(p_hot_cold_file_global->async_memory_reclaim);
+				}
+			}
+			msleep(10);
+		}while(time_before(jiffies,timeout));
+
 		//每个周期global_age加1
 		hot_cold_file_global_info.global_age ++;
 
 		if(test_bit(MEMORY_IN_RECLAIM, &async_memory_reclaim_status)){
-            continue;
+			continue;
 		}
 
 		/*检测内存紧张状态，并在内存紧张时计算要回收的page数到reclaim_pages_target*/
-		memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global);
+		memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global,1);
 		/*不用内存回收*/
 		if(MEMORY_IDLE_SCAN == memory_pressure_level){
 			if(++idle_age_count < IDLE_MAX)
@@ -7128,7 +7187,7 @@ int async_memory_reclaim_main_thread(void *p){
 	struct hot_cold_file_global *p_hot_cold_file_global = (struct hot_cold_file_global *)p;
 	int memory_pressure_level = 0;
 	int repeat_reclaim = 0,repeat_reclaim_all = 0;
-	int check_memory_enough_count = 0;
+	//int check_memory_enough_count = 0;
 	char not_reclaim_target_pages;
 
 	while(!kthread_should_stop()){
@@ -7159,12 +7218,12 @@ direct_reclaim:
 		walk_throuth_all_file_area(p_hot_cold_file_global,1);
 
 		/*内存紧缺时，上边回收过cache文件后，往往内存压力已经比较小了，此时重新获取内存紧缺，更新reclaim_pages_target，并对memory_still_memrgency_after_reclaim清0*/
-		memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global);
+		memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global,2);
 		p_hot_cold_file_global->memory_pressure_level = memory_pressure_level;
 		/*如果回收cache文件后，内存充足了则对memory_still_memrgency_after_reclaim清0*/
 		//if(MEMORY_EMERGENCY_RECLAIM != memory_pressure_level){
 		if(IS_MEMORY_ENOUGH(p_hot_cold_file_global)){
-			printk("%s 3:memory_still_memrgency_after_reclaim:%d clear\n",__func__,repeat_reclaim);
+			MULTI_LEVEL_FILE_AREA_PRINTK("%s 3:memory_still_memrgency_after_reclaim:%d clear\n",__func__,repeat_reclaim);
 			repeat_reclaim = 0;
 			p_hot_cold_file_global->memory_still_memrgency_after_reclaim = 0;
 		}
@@ -7180,7 +7239,7 @@ direct_reclaim:
 		/* 内存回收后依然内存紧张，继续进行内存回收。否则，等待几分钟，如果内存依然不紧张再休眠，主要是应对进程突然
 		 * 大量分配内存，触发kswapd内存回收，产生大量refault，此时异步内存线程还在休眠，它的休眠周期最短是10s，无法
 		 * 应对突然有业务大量分配内存，内存紧张的场景*/
-		memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global);
+		memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global,3);
 		/*repeat_reclaim阈值调大到100了，现在调整memory_pressure_level达到MEMORY_EMERGENCY_RECLAIM再repeat_reclaim加1，然后继续内存回收*/
 		if(memory_pressure_level >= MEMORY_PRESSURE_RECLAIM && repeat_reclaim_all ++ < 50){//repeat_reclaim_all防止陷入无限内存回收死循环
 			repeat_reclaim ++;
@@ -7188,7 +7247,7 @@ direct_reclaim:
 			if(MEMORY_EMERGENCY_RECLAIM == memory_pressure_level){
 				p_hot_cold_file_global->memory_still_memrgency_after_reclaim = repeat_reclaim;
 
-				printk("%s memory still tiny,reclaim more pages repeat_reclaim:%d\n",__func__,repeat_reclaim);
+				MULTI_LEVEL_FILE_AREA_PRINTK("%s memory still tiny,reclaim more pages repeat_reclaim:%d\n",__func__,repeat_reclaim);
 			}else{
 				/*上一次内存回收没有回收到预期的page个数，加大回收力度。否则对memory_still_memrgency_after_reclaim和repeat_reclaim清0*/
 				if(not_reclaim_target_pages){
@@ -7197,12 +7256,12 @@ direct_reclaim:
 					if(repeat_reclaim > 3)
 						memory_pressure_level = MEMORY_EMERGENCY_RECLAIM;
 				}else{
-					printk("%s 1:memory_still_memrgency_after_reclaim:%d clear\n",__func__,repeat_reclaim);
+					MULTI_LEVEL_FILE_AREA_PRINTK("%s 1:memory_still_memrgency_after_reclaim:%d clear\n",__func__,repeat_reclaim);
 					p_hot_cold_file_global->memory_still_memrgency_after_reclaim = 0;
 					repeat_reclaim = 0;
 				}
 				if(repeat_reclaim > 2 && not_reclaim_target_pages){
-					printk("%s repeat_reclaim:%d not_reclaim_target_pages sleep 100ms\n",__func__,repeat_reclaim);
+					MULTI_LEVEL_FILE_AREA_PRINTK("%s repeat_reclaim:%d not_reclaim_target_pages sleep 100ms\n",__func__,repeat_reclaim);
 				    /* 实际mysql测试时，很容易MEMORY_PRESSURE_RECLAIM状态一直持续，导致一直以MEMORY_PRESSURE_RECLAIM状态疯狂回收page。为了降低
 					 * cpu使用率，在上一次没有回收到预期page，并且重复回收page多次后，先休眠一下，否则立即去回收可能也会回收不到充足page*/
 				    msleep(100);
@@ -7212,33 +7271,6 @@ direct_reclaim:
 			/*内存回收前必须赋值p_hot_cold_file_global->memory_pressure_level*/	
 			p_hot_cold_file_global->memory_pressure_level = memory_pressure_level;
 			goto direct_reclaim;
-		}else{
-			printk("%s 2:memory_still_memrgency_after_reclaim:%d clear\n",__func__,repeat_reclaim);
-			repeat_reclaim = 0;
-			repeat_reclaim_all = 0;
-			msleep(100);
-
-			p_hot_cold_file_global->memory_still_memrgency_after_reclaim = 0;
-			check_memory_enough_count = 0;
-			
-			while(/*memory_pressure_level < MEMORY_PRESSURE_RECLAIM &&*/check_memory_enough_count++ < 6000){
-				memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global);
-				if(memory_pressure_level >= MEMORY_PRESSURE_RECLAIM)
-					break;
-
-				msleep(10);
-			}
-            
-			if(memory_pressure_level < MEMORY_PRESSURE_RECLAIM){
-				msleep(100);
-			    memory_pressure_level = check_memory_reclaim_necessary(p_hot_cold_file_global);
-			}
-			if(memory_pressure_level >= MEMORY_PRESSURE_RECLAIM){
-				printk("%s sleep sometime,find memory tiny,continue reclaim\n",__func__);
-				/*每次内存回收前必须赋值p_hot_cold_file_global->memory_pressure_level*/	
-				p_hot_cold_file_global->memory_pressure_level = memory_pressure_level;
-				goto direct_reclaim;
-			}
 		}
 	}
 	return 0;
