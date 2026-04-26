@@ -23,7 +23,7 @@
 #define SUPPORT_FILE_AREA_INIT_OR_DELETE 1
 #define IS_SUPPORT_FILE_AREA_READ_WRITE(mapping) \
     (READ_ONCE(mapping->rh_reserved1) > SUPPORT_FILE_AREA_INIT_OR_DELETE)
-/*²âÊÔÎÄ¼þÖ§³Öfile_areaÐÎÊ½¶ÁÐ´ÎÄ¼þºÍÄÚ´æ»ØÊÕ£¬´ËÊ±Çé¿ö2(mapping->rh_reserved1ÊÇ1)ºÍÇé¿ö3(mapping->rh_reserved1>1)¶¼Òª·µ»Øtrue*/
+/*æµ‹è¯•æ–‡ä»¶æ”¯æŒfile_areaå½¢å¼è¯»å†™æ–‡ä»¶å’Œå†…å­˜å›žæ”¶ï¼Œæ­¤æ—¶æƒ…å†µ2(mapping->rh_reserved1æ˜¯1)å’Œæƒ…å†µ3(mapping->rh_reserved1>1)éƒ½è¦è¿”å›žtrue*/
 #define IS_SUPPORT_FILE_AREA(mapping) \
 	(READ_ONCE(mapping->rh_reserved1) >=  SUPPORT_FILE_AREA_INIT_OR_DELETE)
 
