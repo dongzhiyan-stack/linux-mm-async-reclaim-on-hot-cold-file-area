@@ -2411,10 +2411,11 @@ static void tag_pages_for_writeback_for_file_area(struct address_space *mapping,
 	/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 	xas_lock_irq(&xas);
 
-	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+	p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-		printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+		printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 	xas_for_each_marked(&xas, p_file_area, file_area_end_index, PAGECACHE_TAG_DIRTY) {
 		if(!is_file_area_entry(p_file_area))
@@ -2860,11 +2861,11 @@ static void __folio_mark_dirty_for_file_area(struct folio *folio, struct address
 
 	/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 	xa_lock_irqsave(&mapping->i_pages, flags);
-	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
-
+	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+	p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-        printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+        printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 	if (folio->mapping) {	/* Race with truncate? */
 		XA_STATE(xas, &mapping->i_pages, folio_index(folio) >> PAGE_COUNT_IN_AREA_SHIFT);
@@ -3218,7 +3219,7 @@ static bool __folio_end_writeback_for_file_area(struct folio *folio)
 		xa_lock_irqsave(&mapping->i_pages, flags);
 		smp_rmb();
 		if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 		
 		ret = folio_xor_flags_has_waiters(folio, 1 << PG_writeback);
 
@@ -3340,10 +3341,11 @@ static void __folio_start_writeback_for_file_area(struct folio *folio, bool keep
 		unsigned int page_offset_in_file_area = folio_index(folio) & PAGE_COUNT_IN_AREA_MASK;
 
 		xas_lock_irqsave(&xas, flags);
-		p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+		//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+		p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 		smp_rmb();
 		if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 		
 		p_file_area = xas_load(&xas);
 		/*此时file_area不可能非法*/

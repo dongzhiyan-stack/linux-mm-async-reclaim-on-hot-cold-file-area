@@ -390,11 +390,12 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 	/*该函数没有rcu_read_lock，但是有xa_lock_irq，也能防止并发delete file_stat和file_area*/
 	xa_lock_irq(&mapping->i_pages);
 
-	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+	p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 	
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-        printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+        printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 	/*
 	 * Once I_FREEING or I_WILL_FREE are visible under i_lock, the eviction

@@ -544,8 +544,8 @@ static int dirty_ratio_handler(struct ctl_table *table, int write, void *buffer,
 
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 	if (ret == 0 && write && vm_dirty_ratio != old_ratio) {
-		vm_dirty_bytes = 0;
 		writeback_set_ratelimit();
+		vm_dirty_bytes = 0;
 	}
 	return ret;
 }
@@ -717,6 +717,7 @@ static int __bdi_set_min_ratio(struct backing_dev_info *bdi, unsigned int min_ra
 
 	if (min_ratio > 100 * BDI_RATIO_SCALE)
 		return -EINVAL;
+	min_ratio *= BDI_RATIO_SCALE;
 
 	spin_lock_bh(&bdi_lock);
 	if (min_ratio > bdi->max_ratio) {
@@ -753,8 +754,7 @@ static int __bdi_set_max_ratio(struct backing_dev_info *bdi, unsigned int max_ra
 		ret = -EINVAL;
 	} else {
 		bdi->max_ratio = max_ratio;
-		bdi->max_prop_frac = (FPROP_FRAC_BASE * max_ratio) /
-						(100 * BDI_RATIO_SCALE);
+		bdi->max_prop_frac = (FPROP_FRAC_BASE * max_ratio) / 100;
 	}
 	spin_unlock_bh(&bdi_lock);
 
@@ -2368,10 +2368,11 @@ void tag_pages_for_writeback_for_file_area(struct address_space *mapping,
 	/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 	xas_lock_irq(&xas);
 
-	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+	p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-		printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+		printk("%s %s %d mapping:0x%llx file_stat:0x%llx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 	xas_for_each_marked(&xas, p_file_area, file_area_end_index, PAGECACHE_TAG_DIRTY) {
 		if(!is_file_area_entry(p_file_area))
@@ -2773,10 +2774,11 @@ void __folio_mark_dirty_for_file_area(struct folio *folio, struct address_space 
 
 	/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 	xa_lock_irqsave(&mapping->i_pages, flags);
-	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+	//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+	p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-        printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+        printk("%s %s %d mapping:0x%llx file_stat:0x%llx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 	if (folio->mapping) {	/* Race with truncate? */
 		XA_STATE(xas, &mapping->i_pages, folio_index(folio) >> PAGE_COUNT_IN_AREA_SHIFT);
@@ -3108,10 +3110,11 @@ bool __folio_end_writeback_for_file_area(struct folio *folio)
 		/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 		xa_lock_irqsave(&mapping->i_pages, flags);
 		
-		p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+		//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+		p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 		smp_rmb();
 		if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+			printk("%s %s %d mapping:0x%llx file_stat:0x%llx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 		ret = folio_test_clear_writeback(folio);
 		if (ret) {
@@ -3244,10 +3247,11 @@ bool __folio_start_writeback_for_file_area(struct folio *folio, bool keep_write)
 		/*该函数没有rcu_read_lock，但是有xa_lock_irqsave加锁，也能防止file_stat被方法delete*/
 		xas_lock_irqsave(&xas, flags);
 
-		p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+		//p_file_stat = (struct file_stat *)mapping->rh_reserved1;
+		p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 		smp_rmb();
 		if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-			printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+			printk("%s %s %d mapping:0x%llx file_stat:0x%llx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 		p_file_area = xas_load(&xas);
 		/*此时file_area不可能非法*/

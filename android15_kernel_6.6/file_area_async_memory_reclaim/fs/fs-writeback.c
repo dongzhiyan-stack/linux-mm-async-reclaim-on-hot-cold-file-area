@@ -390,10 +390,11 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 	/*该函数没有rcu_read_lock，但是有xa_lock_irq，也能防止并发delete file_stat和file_area*/
 	xa_lock_irq(&mapping->i_pages);
 
-	p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+	//p_file_stat_base = (struct file_stat_base *)mapping->rh_reserved1;
+	p_file_stat_base = (struct file_stat_base *)get_mapping_reserved_for_file_stat(mapping);
 	smp_rmb();
 	if(unlikely(!IS_SUPPORT_FILE_AREA_READ_WRITE(mapping)))
-        printk("%s %s %d mapping:0x%llx file_stat:0x%lx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,mapping->rh_reserved1);
+        printk("%s %s %d mapping:0x%llx file_stat:0x%llx has delete,do not use this file_stat!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n",__func__,current->comm,current->pid,(u64)mapping,get_mapping_reserved_for_file_stat(mapping));
 
 	/*
 	 * Once I_FREEING or I_WILL_FREE are visible under i_lock, the eviction
@@ -488,16 +489,14 @@ static bool inode_do_switch_wbs_for_file_area(struct inode *inode,
 		inode->i_wb = new_wb;
 
 		if (inode->i_state & I_DIRTY_ALL) {
-			/*
-			 * We need to keep b_dirty list sorted by
-			 * dirtied_time_when. However properly sorting the
-			 * inode in the list gets too expensive when switching
-			 * many inodes. So just attach inode at the end of the
-			 * dirty list and clobber the dirtied_time_when.
-			 */
-			inode->dirtied_time_when = jiffies;
+			struct inode *pos;
+
+			list_for_each_entry(pos, &new_wb->b_dirty, i_io_list)
+				if (time_after_eq(inode->dirtied_when,
+						  pos->dirtied_when))
+					break;
 			inode_io_list_move_locked(inode, new_wb,
-						  &new_wb->b_dirty);
+						  pos->i_io_list.prev);
 		} else {
 			inode_cgwb_move_to_attached(inode, new_wb);
 		}
@@ -589,16 +588,14 @@ static bool inode_do_switch_wbs(struct inode *inode,
 		inode->i_wb = new_wb;
 
 		if (inode->i_state & I_DIRTY_ALL) {
-			/*
-			 * We need to keep b_dirty list sorted by
-			 * dirtied_time_when. However properly sorting the
-			 * inode in the list gets too expensive when switching
-			 * many inodes. So just attach inode at the end of the
-			 * dirty list and clobber the dirtied_time_when.
-			 */
-			inode->dirtied_time_when = jiffies;
+			struct inode *pos;
+
+			list_for_each_entry(pos, &new_wb->b_dirty, i_io_list)
+				if (time_after_eq(inode->dirtied_when,
+						  pos->dirtied_when))
+					break;
 			inode_io_list_move_locked(inode, new_wb,
-						  &new_wb->b_dirty);
+						  pos->i_io_list.prev);
 		} else {
 			inode_cgwb_move_to_attached(inode, new_wb);
 		}
@@ -640,7 +637,6 @@ static void inode_switch_wbs_work_fn(struct work_struct *work)
 	 */
 	down_read(&bdi->wb_switch_rwsem);
 
-	inodep = isw->inodes;
 	/*
 	 * By the time control reaches here, RCU grace period has passed
 	 * since I_WB_SWITCH assertion and all wb stat update transactions
@@ -651,7 +647,6 @@ static void inode_switch_wbs_work_fn(struct work_struct *work)
 	 * gives us exclusion against all wb related operations on @inode
 	 * including IO list manipulations and stat updates.
 	 */
-relock:
 	if (old_wb < new_wb) {
 		spin_lock(&old_wb->list_lock);
 		spin_lock_nested(&new_wb->list_lock, SINGLE_DEPTH_NESTING);
@@ -660,17 +655,10 @@ relock:
 		spin_lock_nested(&old_wb->list_lock, SINGLE_DEPTH_NESTING);
 	}
 
-	while (*inodep) {
+	for (inodep = isw->inodes; *inodep; inodep++) {
 		WARN_ON_ONCE((*inodep)->i_wb != old_wb);
 		if (inode_do_switch_wbs(*inodep, old_wb, new_wb))
 			nr_switched++;
-		inodep++;
-		if (*inodep && need_resched()) {
-			spin_unlock(&new_wb->list_lock);
-			spin_unlock(&old_wb->list_lock);
-			cond_resched();
-			goto relock;
-		}
 	}
 
 	spin_unlock(&new_wb->list_lock);
@@ -2542,13 +2530,11 @@ static void wakeup_dirtytime_writeback(struct work_struct *w)
 				wb_wakeup(wb);
 	}
 	rcu_read_unlock();
-	if (dirtytime_expire_interval)
 		schedule_delayed_work(&dirtytime_work, dirtytime_expire_interval * HZ);
 }
 
 static int __init start_dirtytime_writeback(void)
 {
-	if (dirtytime_expire_interval)
 		schedule_delayed_work(&dirtytime_work, dirtytime_expire_interval * HZ);
 	return 0;
 }
@@ -2560,12 +2546,8 @@ int dirtytime_interval_handler(struct ctl_table *table, int write,
 	int ret;
 
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
-	if (ret == 0 && write) {
-		if (dirtytime_expire_interval)
+	if (ret == 0 && write)
 			mod_delayed_work(system_wq, &dirtytime_work, 0);
-		else
-			cancel_delayed_work_sync(&dirtytime_work);
-	}
 	return ret;
 }
 
@@ -2712,6 +2694,9 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 			wakeup_bdi = inode_io_list_move_locked(inode, wb,
 							       dirty_list);
 
+			spin_unlock(&wb->list_lock);
+			spin_unlock(&inode->i_lock);
+			trace_writeback_dirty_inode_enqueue(inode);
 			/*
 			 * If this is the first dirty inode for this bdi,
 			 * we have to wake-up the corresponding bdi thread
@@ -2722,9 +2707,6 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 			    (wb->bdi->capabilities & BDI_CAP_WRITEBACK))
 				wb_wakeup_delayed(wb);
 
-			spin_unlock(&wb->list_lock);
-			spin_unlock(&inode->i_lock);
-			trace_writeback_dirty_inode_enqueue(inode);
 
 			return;
 		}
