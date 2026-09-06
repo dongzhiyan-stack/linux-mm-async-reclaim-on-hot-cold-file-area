@@ -536,8 +536,10 @@ static ssize_t file_area_free_age_dx_write(struct file *file,
 	if (rc)
 		return rc;
 
-	if(val < 1000)
+	if(val < 1000){
 		hot_cold_file_global_info.file_area_free_age_dx_ori = val;
+		hot_cold_file_global_info.file_area_free_age_dx = val;
+	}
 	else
 		return -EINVAL;
 
